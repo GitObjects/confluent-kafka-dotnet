@@ -27,6 +27,17 @@ namespace Confluent.Kafka.IntegrationTests
     {
         private static List<object[]> kafkaParameters;
 
+        private static object logLockObj = new object();
+        private static void LogToFile(string msg)
+        {
+            lock (logLockObj)
+            {
+                // Uncomment to enable logging to a file. Useful for debugging,
+                // for example, which test caused librdkafka to segfault.
+                // File.AppendAllLines("/tmp/test.txt", new [] { msg });
+            }
+        }
+
         static Tests()
         {
             // Quick fix for https://github.com/Microsoft/vstest/issues/918
@@ -42,7 +53,7 @@ namespace Confluent.Kafka.IntegrationTests
             {
                 var assemblyPath = typeof(Tests).GetTypeInfo().Assembly.Location;
                 var assemblyDirectory = Path.GetDirectoryName(assemblyPath);
-                var jsonPath = Path.Combine(assemblyDirectory, "kafka.parameters.json");
+                var jsonPath = Path.Combine(assemblyDirectory, "testconf.json");
                 var json = JObject.Parse(File.ReadAllText(jsonPath));
                 kafkaParameters = new List<object[]>
                 {

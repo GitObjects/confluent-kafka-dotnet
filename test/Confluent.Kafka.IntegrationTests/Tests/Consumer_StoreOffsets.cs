@@ -14,10 +14,12 @@
 //
 // Refer to LICENSE for more information.
 
+#pragma warning disable xUnit1026
+
+using Confluent.Kafka.Serdes;
 using System;
 using System.Collections.Generic;
 using System.Text;
-using Confluent.Kafka.Serialization;
 using Xunit;
 
 namespace Confluent.Kafka.IntegrationTests
@@ -30,48 +32,59 @@ namespace Confluent.Kafka.IntegrationTests
         [Theory, MemberData(nameof(KafkaParameters))]
         public static void Consumer_StoreOffsets(string bootstrapServers, string topic, string partitionedTopic)
         {
-            
-            var consumerConfig = new Dictionary<string, object>
+            LogToFile("start Consumer_StoreOffsets");
+
+            var consumerConfig = new ConsumerConfig
             {
-                { "group.id", Guid.NewGuid().ToString() },
-                { "bootstrap.servers", bootstrapServers },
-                { "auto.offset.reset", "latest" },
-                { "enable.auto.commit", true},
-                { "enable.auto.offset.store", false}
+                GroupId = Guid.NewGuid().ToString(),
+                BootstrapServers = bootstrapServers,
+                AutoOffsetReset = AutoOffsetReset.Latest,
+                EnableAutoCommit = true,
+                EnableAutoOffsetStore = false
             };
 
-            var producerConfig = new Dictionary<string, object> { { "bootstrap.servers", bootstrapServers } };
+            var producerConfig = new ProducerConfig{ BootstrapServers = bootstrapServers };
 
-            using (var producer = new Producer<Null, string>(producerConfig, null, new StringSerializer(Encoding.UTF8)))
-            using (var consumer = new Consumer<Null, string>(consumerConfig, null, new StringDeserializer(Encoding.UTF8)))
+            IEnumerable<TopicPartition> assignment = null;
+
+            using (var producer = new ProducerBuilder<byte[], byte[]>(producerConfig).Build())
+            using (var consumer =
+                new ConsumerBuilder<Null, string>(consumerConfig)
+                    .SetRebalanceHandler((c, e) =>
+                    {
+                        if (e.IsAssignment)
+                        {
+                            c.Assign(e.Partitions);
+                            assignment = e.Partitions;
+                        }
+                    })
+                    .Build())
             {
-                IEnumerable<TopicPartition> assignedPartitions = null;
-                Message<Null, string> message;
-
-                consumer.OnPartitionsAssigned += (_, partitions) =>
-                {
-                    consumer.Assign(partitions);
-                    assignedPartitions = partitions;
-                };
-
                 consumer.Subscribe(topic);
 
-                while (assignedPartitions == null)
+                while (assignment == null)
                 {
-                    consumer.Poll(TimeSpan.FromSeconds(1));
+                    consumer.Consume(TimeSpan.FromSeconds(10));
                 }
 
-                Assert.False(consumer.Consume(out message, TimeSpan.FromSeconds(1)));
+                ConsumeResult<Null, string> record = consumer.Consume(TimeSpan.FromSeconds(10));
+                Assert.Null(record);
 
-                Assert.False(producer.ProduceAsync(topic, null, "test store offset value").Result.Error);
-                Assert.True(consumer.Consume(out message, TimeSpan.FromSeconds(30)));
-                var result = consumer.StoreOffset(message);
+                producer.ProduceAsync(topic, new Message<byte[], byte[]> { Value = Serializers.Utf8.Serialize("test store offset value", SerializationContext.Empty) }).Wait();
+                record = consumer.Consume(TimeSpan.FromSeconds(10));
+                Assert.NotNull(record?.Message);
 
-                Assert.Equal(ErrorCode.NoError, result.Error.Code);
-                Assert.Equal(message.Topic, result.Topic);
-                Assert.Equal(message.Partition, result.Partition);
-                Assert.Equal(message.Offset.Value+1, result.Offset.Value);
+                // test doesn't throw.
+                consumer.StoreOffset(record);
+
+                // test doesn't throw.
+                consumer.StoreOffsets(new List<TopicPartitionOffset>());
+
+                consumer.Close();
             }
+
+            Assert.Equal(0, Library.HandleCount);
+            LogToFile("end   Consumer_StoreOffsets");
         }
 
     }
